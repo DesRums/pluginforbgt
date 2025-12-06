@@ -1,14 +1,14 @@
 /* bwarc-plugin — Optimized for Lampa
-   Single-file plugin.js
+   Changes:
    - Button text -> "Дивитись ТУТ"
    - All balancers activated
-   - Removed direct this.rch() calls and replaced with safe fallback
-   - Performance & stability focused
+   - Performance & stability improvements
+   - Single-file ready to upload to GitHub as plugin.js
 */
 (function () {
   'use strict';
 
-  // --- Config
+  // -- Config
   const CONFIG = {
     api: 'lampac',
     localhost: 'https://rc.bwa.to/',
@@ -29,19 +29,21 @@
     ]
   };
 
-  // Activate default balancers array (centralized)
+  // default balancers list extracted/centralized (you can extend)
   const ALL_BALANCERS = CONFIG.onlineChoiceSyncList.slice();
 
-  // --- Helpers
+  // -- Helpers
   const hostkey = CONFIG.nwsHost.replace(/^https?:\/\//, '');
   const uidKey = 'lampac_unic_id';
 
   function safeGetStorage(key, defaultValue) {
     try { return Lampa.Storage.get(key, defaultValue); } catch (e) { return defaultValue; }
   }
+
   function safeSetStorage(key, val) {
     try { Lampa.Storage.set(key, val); } catch (e) {}
   }
+
   function getOrCreateUID() {
     let unic = safeGetStorage(uidKey, '');
     if (!unic) {
@@ -51,10 +53,147 @@
     return unic;
   }
 
-  // account helper to append tracking params
+  // minimal Android version getter (keeps original compatibility)
+  function getAndroidVersion() {
+    if (Lampa.Platform.is('android')) {
+      try {
+        const current = AndroidJS.appVersion().split('-');
+        return parseInt(current.pop());
+      } catch (e) { return 0; }
+    }
+    return 0;
+  }
+
+  // -- RCH / NWS helpers (kept compatible, but simplified)
+  if (!window.rch_nws) window.rch_nws = {};
+  if (!window.rch_nws[hostkey]) {
+    window.rch_nws[hostkey] = {
+      type: Lampa.Platform.is('android') ? 'apk' : Lampa.Platform.is('tizen') ? 'cors' : undefined,
+      startTypeInvoke: false,
+      rchRegistry: false,
+      apkVersion: getAndroidVersion(),
+      connectionId: ''
+    };
+  }
+
+  window.rch_nws[hostkey].typeInvoke = function (host, call) {
+    if (window.rch_nws[hostkey].startTypeInvoke) return call();
+    window.rch_nws[hostkey].startTypeInvoke = true;
+
+    const applyType = (good) => {
+      window.rch_nws[hostkey].type = Lampa.Platform.is('android') ? 'apk' : (good ? 'cors' : 'web');
+      call();
+    };
+
+    if (Lampa.Platform.is('android') || Lampa.Platform.is('tizen')) {
+      applyType(true);
+    } else {
+      const net = new Lampa.Reguest();
+      // quick check: try to reach cors endpoint — fallback to web
+      net.silent(CONFIG.nwsHost.indexOf(location.host) >= 0 ? 'https://github.com/' : host + '/cors/check',
+        () => applyType(true),
+        () => applyType(false),
+        false, { dataType: 'text', timeout: 3000 });
+    }
+  };
+
+  window.rch_nws[hostkey].Registry = function (client, startConnection) {
+    window.rch_nws[hostkey].typeInvoke(CONFIG.nwsHost, function () {
+      const payload = {
+        version: CONFIG.version,
+        host: location.host,
+        rchtype: Lampa.Platform.is('android') ? 'apk' : Lampa.Platform.is('tizen') ? 'cors' : (window.rch_nws[hostkey].type || ''),
+        apkVersion: window.rch_nws[hostkey].apkVersion,
+        player: Lampa.Storage.field('player'),
+        account_email: Lampa.Storage.get('account_email'),
+        unic_id: getOrCreateUID(),
+        profile_id: Lampa.Storage.get('lampac_profile_id', ''),
+        token: ''
+      };
+
+      client.invoke("RchRegistry", JSON.stringify(payload));
+
+      if (client._shouldReconnect && window.rch_nws[hostkey].rchRegistry) {
+        if (startConnection) startConnection();
+        return;
+      }
+
+      window.rch_nws[hostkey].rchRegistry = true;
+
+      client.on('RchRegistry', () => { if (startConnection) startConnection(); });
+
+      client.on("RchClient", (rchId, url, data, headers, returnHeaders) => {
+        const network = new Lampa.Reguest();
+        const result = (html) => {
+          try {
+            if ((typeof html === 'object' || Array.isArray(html))) html = JSON.stringify(html);
+            if (typeof CompressionStream !== 'undefined' && html && html.length > 1000) {
+              const compressionStream = new CompressionStream('gzip');
+              const encoder = new TextEncoder();
+              const readable = new ReadableStream({
+                start(ctrl) { ctrl.enqueue(encoder.encode(html)); ctrl.close(); }
+              });
+              const compressedStream = readable.pipeThrough(compressionStream);
+              new Response(compressedStream).arrayBuffer().then((compressedBuffer) => {
+                const compressedArray = new Uint8Array(compressedBuffer);
+                if (compressedArray.length > html.length) client.invoke("RchResult", rchId, html);
+                else {
+                  $.ajax({
+                    url: CONFIG.localhost + 'rch/gzresult?id=' + rchId,
+                    type: 'POST',
+                    data: compressedArray,
+                    async: true,
+                    cache: false,
+                    contentType: false,
+                    processData: false
+                  }).fail(() => client.invoke("RchResult", rchId, html));
+                }
+              }).catch(() => client.invoke("RchResult", rchId, html));
+            } else client.invoke("RchResult", rchId, html);
+          } catch (e) { client.invoke("RchResult", rchId, ''); }
+        };
+
+        if (url === 'eval') {
+          try { result(eval(data)); } catch (e) { result(''); }
+        } else if (url === 'evalrun') {
+          try { eval(data); } catch (e) {}
+        } else if (url === 'ping') {
+          result('pong');
+        } else {
+          network["native"](url, result, () => result(''), data, { dataType: 'text', timeout: 8000, headers: headers, returnHeaders: returnHeaders });
+        }
+      });
+
+      client.on('Connected', (connectionId) => {
+        window.rch_nws[hostkey].connectionId = connectionId;
+      });
+      client.on('Closed', () => {});
+      client.on('Error', (err) => { console.log('RCH error', err); });
+    });
+  };
+
+  // rchRun wrapper (loads nws-client only once)
+  function rchRun(json, call) {
+    if (typeof NativeWsClient === 'undefined') {
+      Lampa.Utils.putScript([CONFIG.nwsHost + "/js/nws-client-es5.js?v18112025"], () => {},
+        false, () => { rchInvoke(json, call); }, true);
+    } else rchInvoke(json, call);
+  }
+
+  function rchInvoke(json, call) {
+    if (!window.nwsClient) window.nwsClient = {};
+    if (window.nwsClient[hostkey] && window.nwsClient[hostkey].socket) window.nwsClient[hostkey].socket.close();
+
+    window.nwsClient[hostkey] = new NativeWsClient(json.nws, { autoReconnect: false });
+    window.nwsClient[hostkey].on('Connected', (connectionId) => {
+      window.rch_nws[hostkey].Registry(window.nwsClient[hostkey], () => { call(); });
+    });
+    window.nwsClient[hostkey].connect();
+  }
+
+  // add account params to urls
   function account(url) {
-    url = String(url || '');
-    if (!url) return url;
+    url = String(url);
     if (url.indexOf('account_email=') === -1) {
       const email = Lampa.Storage.get('account_email');
       if (email) url = Lampa.Utils.addUrlComponent(url, 'account_email=' + encodeURIComponent(email));
@@ -63,17 +202,18 @@
       const uid = getOrCreateUID();
       if (uid) url = Lampa.Utils.addUrlComponent(url, 'uid=' + encodeURIComponent(uid));
     }
-    if (url.indexOf('nws_id=') === -1) {
-      // non-critical: attach if available
-      try {
-        const nws_id = (window.rch_nws && window.rch_nws[hostkey] && window.rch_nws[hostkey].connectionId) || '';
-        if (nws_id) url = Lampa.Utils.addUrlComponent(url, 'nws_id=' + encodeURIComponent(nws_id));
-      } catch (e) {}
+    if (url.indexOf('token=') === -1) {
+      const token = '';
+      if (token) url = Lampa.Utils.addUrlComponent(url, 'token=' + token);
+    }
+    if (url.indexOf('nws_id=') === -1 && window.rch_nws && window.rch_nws[hostkey]) {
+      const nws_id = window.rch_nws[hostkey].connectionId || '';
+      if (nws_id) url = Lampa.Utils.addUrlComponent(url, 'nws_id=' + encodeURIComponent(nws_id));
     }
     return url;
   }
 
-  // --- Component core (optimized & rch-free)
+  // -- Component core (optimized)
   function component(object) {
     const network = new Lampa.Reguest();
     const scroll = new Lampa.Scroll({ mask: true, over: true });
@@ -93,7 +233,7 @@
     let lifeWaitTimes = 0;
     let memkey = '';
 
-    // cached balancers with search support
+    // local cache for balansers with search support (request once)
     if (typeof window.__bwa_balancers_with_search === 'undefined') {
       window.__bwa_balancers_with_search = null;
       network.timeout(CONFIG.defaultTimeout);
@@ -108,7 +248,6 @@
       return (bals || name).toLowerCase();
     }
 
-    // clarification search helpers
     function setClarificationSearch(value) {
       try {
         const id = Lampa.Utils.hash(object.movie.number_of_seasons ? object.movie.original_name : object.movie.original_title);
@@ -117,6 +256,7 @@
         Lampa.Storage.set('clarification_search', all);
       } catch (e) {}
     }
+
     function clearClarificationSearch() {
       try {
         const id = Lampa.Utils.hash(object.movie.number_of_seasons ? object.movie.original_name : object.movie.original_title);
@@ -126,26 +266,15 @@
       } catch (e) {}
     }
 
-    // Small safe rch fallback processor:
-    // If server returns { rch: { url: '...' } } — try to fetch that URL.
-    // If rch contains other info, we will show a user-friendly noty.
-    function handlePossibleRch(json, onSuccess, onFail) {
+    function getClarificationSearch() {
       try {
-        if (!json || !json.rch) return onFail();
-        const rch = json.rch;
-        // if rch.url provided, attempt to fetch it
-        if (rch.url) {
-          network.timeout(CONFIG.defaultTimeout);
-          network.silent(account(rch.url), onSuccess, onFail, false, { dataType: 'text' });
-        } else {
-          // cannot process complex rch on client — notify and fail gracefully
-          Lampa.Noty.show('RCH response received — server-side processing required', 4000);
-          onFail();
-        }
-      } catch (e) { onFail(); }
+        const id = Lampa.Utils.hash(object.movie.number_of_seasons ? object.movie.original_name : object.movie.original_title);
+        const all = Lampa.Storage.get('clarification_search', {}) || {};
+        return all[id];
+      } catch (e) { return undefined; }
     }
 
-    // Initialize component
+    // initialize component
     this.initialize = function () {
       const self = this;
       this.loading(true);
@@ -155,12 +284,13 @@
         setClarificationSearch(value);
         Lampa.Activity.replace({ search: value, clarification: true, similar: true });
       };
+
       filter.onBack = () => self.start();
 
-      // prevent frequent switching
+      // avoid frequent balanser changes when hovering
       filter.render().find('.selector').on('hover:enter', () => clearInterval(balanserTimer));
 
-      // move search field into filter
+      // move search field to filter
       filter.render().find('.filter--search').appendTo(filter.render().find('.torrent-filter'));
 
       filter.onSelect = (type, a, b) => {
@@ -200,7 +330,7 @@
       Lampa.Controller.enable('content');
       this.loading(false);
 
-      // explicit source passed via object
+      // if source explicitly passed (from external call)
       if (object.balanser) {
         files.render().find('.filter--search').remove();
         sources = {};
@@ -214,9 +344,9 @@
         }, false, { dataType: 'text' });
       }
 
-      // otherwise fetch external ids then create source
+      // otherwise get external ids and create source
       this.externalids().then(() => this.createSource()).then((json) => {
-        // hide search field for balancers without search support
+        // hide search filter if balancer without search support
         if (!(window.__bwa_balancers_with_search || []).find(b => balanser.slice(0, b.length) === b)) {
           filter.render().find('.filter--search').addClass('hide');
         }
@@ -224,7 +354,7 @@
       }).catch(e => this.noConnectToServer(e));
     };
 
-    // fetch external ids (promise)
+    // externalids fetch (kept same semantics but with Promise)
     this.externalids = function () {
       return new Promise((resolve) => {
         if (!object.movie.imdb_id || !object.movie.kinopoisk_id) {
@@ -243,7 +373,6 @@
       });
     };
 
-    // update last balanser selection cache
     this.updateBalanser = function (balanser_name) {
       try {
         const last_select_balanser = Lampa.Storage.cache('online_last_balanser', CONFIG.choiceCacheTTL, {});
@@ -277,7 +406,7 @@
       query.push('source=' + card_source);
       query.push('clarification=' + (object.clarification ? 1 : 0));
       query.push('similar=' + (object.similar ? true : false));
-      query.push('rchtype=' + '');
+      query.push('rchtype=' + ((window.rch_nws && window.rch_nws[hostkey]) ? window.rch_nws[hostkey].type : ''));
       if (Lampa.Storage.get('account_email', '')) query.push('cub_id=' + Lampa.Utils.hash(Lampa.Storage.get('account_email', '')));
       return url + (url.indexOf('?') >= 0 ? '&' : '?') + query.join('&');
     };
@@ -288,7 +417,7 @@
       return Lampa.Storage.get('online_balanser', filter_sources.length ? filter_sources[0] : '');
     };
 
-    // startSource: build sources object
+    // startSource build sources object from remote list
     this.startSource = function (json) {
       return new Promise((resolve, reject) => {
         json.forEach(j => {
@@ -296,10 +425,10 @@
           sources[name] = { url: j.url, name: j.name, show: typeof j.show === 'undefined' ? true : j.show };
         });
 
-        // ensure all known balancers are present and shown (force activate)
+        // ensure all known balancers are present and shown
         ALL_BALANCERS.forEach(b => {
           if (!sources[b]) sources[b] = { url: CONFIG.localhost + 'lite/' + b, name: b, show: true };
-          else sources[b].show = true;
+          else sources[b].show = true; // force activate
         });
 
         filter_sources = Lampa.Arrays.getKeys(sources);
@@ -320,7 +449,7 @@
       });
     };
 
-    // lifeSource: tries to poll live events with backoff
+    // lifeSource tries to get live events; it updates filter list periodically with backoff
     this.lifeSource = function () {
       return new Promise((resolve, reject) => {
         const url = this.requestParams(CONFIG.localhost + 'lifeevents?memkey=' + (memkey || ''));
@@ -371,7 +500,7 @@
       });
     };
 
-    // createSource: fetch list and choose initial one
+    // createSource: fetches list and chooses initial one
     this.createSource = function () {
       return new Promise((resolve, reject) => {
         const url = this.requestParams(CONFIG.localhost + 'lite/events?life=true');
@@ -410,7 +539,7 @@
       } else this.empty();
     };
 
-    // parse JSON data encoded in .videos__item / .videos__button
+    // parses elements with .videos__item and .videos__button
     this.parseJsonDate = function (str, name) {
       try {
         const html = $('<div>' + str + '</div>');
@@ -441,7 +570,7 @@
       } catch (e) { return []; }
     };
 
-    // getFileUrl — safe, handles rch fallback using handlePossibleRch
+    // getFileUrl with rch handling
     this.getFileUrl = function (file, call, waiting_rch) {
       const self = this;
 
@@ -460,40 +589,19 @@
       });
 
       network["native"](account(file.url), function (json) {
-        try {
-          // if server returned rch-like object, try safe fallback
-          if (json && json.rch) {
-            if (waiting_rch) {
-              Lampa.Loading.stop();
-              call(false, {});
-            } else {
-              handlePossibleRch(json, function (newStr) {
-                // try parse returned text as JSON
-                try {
-                  const parsed = Lampa.Arrays.decodeJson(newStr, {});
-                  if (parsed && parsed.url) {
-                    Lampa.Loading.stop();
-                    call(parsed, parsed || {});
-                  } else {
-                    Lampa.Loading.stop();
-                    call(false, {});
-                  }
-                } catch (e) {
-                  Lampa.Loading.stop();
-                  call(false, {});
-                }
-              }, function () {
-                Lampa.Loading.stop();
-                call(false, {});
-              });
-            }
-          } else {
+        if (json && json.rch) {
+          if (waiting_rch) {
             Lampa.Loading.stop();
-            call(json, json || {});
+            call(false, {});
+          } else {
+            self.rch(json, function () {
+              Lampa.Loading.stop();
+              self.getFileUrl(file, call, true);
+            });
           }
-        } catch (err) {
+        } else {
           Lampa.Loading.stop();
-          call(false, {});
+          call(json, json || {});
         }
       }, function () {
         Lampa.Loading.stop();
@@ -525,18 +633,18 @@
     };
 
     this.setDefaultQuality = function (data) {
-      if (Lampa.Arrays.getKeys(data.quality || {}).length) {
+      if (Lampa.Arrays.getKeys(data.quality).length) {
         for (const q in data.quality) {
           if (parseInt(q) === Lampa.Storage.field('video_quality_default')) {
             data.url = data.quality[q];
             this.orUrlReserve(data);
           }
-          if (data.quality[q] && data.quality[q].indexOf(" or ") !== -1) data.quality[q] = data.quality[q].split(" or ")[0];
+          if (data.quality[q].indexOf(" or ") !== -1) data.quality[q] = data.quality[q].split(" or ")[0];
         }
       }
     };
 
-    // display + onEnter play flow
+    // display + onEnter play flow optimized
     this.display = function (videos) {
       const self = this;
       this.draw(videos, {
@@ -605,6 +713,7 @@
               if (first.url) {
                 const element = first;
                 element.isonline = true;
+                // attempt to play via Lampa.Player
                 Lampa.Player.play(element);
                 Lampa.Player.playlist(playlist);
                 if (element.subtitles_call) self.loadSubtitles(element.subtitles_call);
@@ -635,22 +744,12 @@
       });
     };
 
-    // parse results string (or object)
+    // parsing and routing results
     this.parse = function (str) {
       const self = this;
       let json = Lampa.Arrays.decodeJson(str, {});
       if (Lampa.Arrays.isObject(str) && str.rch) json = str;
-      // if server instructs rch — handle via fallback
-      if (json && json.rch && !json.url) {
-        // try safe rch fallback
-        handlePossibleRch(json, function (resStr) {
-          // re-run parse with returned content
-          self.parse(resStr);
-        }, function () {
-          self.doesNotAnswer(json);
-        });
-        return;
-      }
+      if (json.rch) return this.rch(json);
 
       try {
         const items = this.parseJsonDate(str, '.videos__item');
@@ -706,7 +805,7 @@
       }
     };
 
-    // similar items
+    // similar items view
     this.similars = function (json) {
       const self = this;
       scroll.clear();
@@ -771,6 +870,7 @@
       images = [];
     };
 
+    // reset / empty flows
     this.reset = function () {
       last = false;
       clearInterval(balanserTimer);
@@ -787,7 +887,7 @@
       else { this.activity.loader(false); this.activity.toggle(); }
     };
 
-    // filter builder
+    // filter builder — optimized to reduce DOM reflows
     this.filter = function (filter_items, choice) {
       const select = [];
       const add = (type, title) => {
@@ -859,7 +959,7 @@
       } else body.append('<span>' + Lampa.Lang.translate('lampac_no_watch_history') + '</span>');
     };
 
-    // draw items (optimized)
+    // draw items (kept robust with fewer reflows)
     this.draw = function (items, params = {}) {
       if (!items.length) return this.empty();
       scroll.clear();
@@ -1028,7 +1128,7 @@
       });
     };
 
-    // context menu
+    // context menu builder (kept as before with small improvements)
     this.contextMenu = function (params) {
       params.html.on('hover:long', function () {
         const enabled = Lampa.Controller.enabled().name;
@@ -1178,7 +1278,58 @@
     };
   } // end component
 
-  // addSourceSearch helper
+  // --- Safe rch fallback / polyfill ---
+  // This ensures this.rch is always callable and avoids "this.rch is not a function" errors.
+  // It supports simple cases where server returns { rch: { url: '...', ... } } and
+  // will try to fetch that url. For complex native websockets RCH behavior this is a
+  // graceful fallback (returns empty result) so UI won't show green error screen.
+  (function () {
+    try {
+      if (typeof component !== 'undefined' && typeof component.prototype !== 'undefined' && !component.prototype.rch) {
+        component.prototype.rch = function (json, callback) {
+          try {
+            // allow calling without callback
+            callback = typeof callback === 'function' ? callback : function () {};
+            if (!json || !json.rch) return callback('');
+            // if rch contains direct url -> fetch and inject result to local endpoint handling
+            if (json.rch.url) {
+              const net = new Lampa.Reguest();
+              net.timeout(CONFIG.defaultTimeout || 10000);
+              // try to fetch direct rch url (account wrapper if available)
+              const fetchUrl = (typeof account === 'function') ? account(json.rch.url) : json.rch.url;
+              net.silent(fetchUrl, function (res) {
+                // If server returned JSON with rch nested, attempt to rchRun again
+                try {
+                  const parsed = typeof res === 'string' ? Lampa.Arrays.decodeJson(res, null) : res;
+                  if (parsed && parsed.rch && typeof rchRun === 'function') {
+                    // try to run native rch flow
+                    rchRun(parsed, function () { callback(''); });
+                  } else {
+                    callback(res || '');
+                  }
+                } catch (e) { callback(res || ''); }
+              }, function () {
+                // fallback: if nws-client available, try rchRun with original json
+                if (typeof rchRun === 'function') {
+                  try { rchRun(json.rch, function () { callback(''); }); } catch (e) { callback(''); }
+                } else callback('');
+              }, false, { dataType: 'text' });
+            } else if (json.rch.nws) {
+              // if nws config present, try to use rchRun
+              if (typeof rchRun === 'function') {
+                try { rchRun(json.rch, function () { callback(''); }); } catch (e) { callback(''); }
+              } else callback('');
+            } else {
+              // unknown rch payload: safe empty result
+              callback('');
+            }
+          } catch (e) { try { callback(''); } catch (er) {} }
+        };
+      }
+    } catch (e) {}
+  })();
+
+  // addSourceSearch helper (kept, slightly optimized)
   function addSourceSearch(spiderName, spiderUri) {
     const network = new Lampa.Reguest();
     const source = {
@@ -1216,10 +1367,9 @@
 
         network.silent(account(CONFIG.localhost + 'lite/' + spiderUri + '?title=' + params.query), function (json) {
           if (json.rch) {
-            // rch fallback
-            if (json.rch.url) {
-              network.silent(account(json.rch.url), function (links) { searchComplite(links); }, function () { oncomplite([]); });
-            } else oncomplite([]);
+            rchRun(json, function () {
+              network.silent(account(CONFIG.localhost + 'lite/' + spiderUri + '?title=' + params.query), function (links) { searchComplite(links); }, function () { oncomplite([]); });
+            });
           } else searchComplite(json);
         }, function () { oncomplite([]); });
       },
@@ -1244,7 +1394,7 @@
     Lampa.Search.addSource(source);
   }
 
-  // start plugin: register component, templates, translations, button etc.
+  // startPlugin: registers component, templates, translations, button etc.
   function startPlugin() {
     if (window.bwarch_plugin) return;
     window.bwarch_plugin = true;
@@ -1277,7 +1427,7 @@
 
     Lampa.Manifest.plugins = manifest;
 
-    // translations (add Ukrainian label)
+    // translations (add Ukrainian 'Дивитись ТУТ' label usage below)
     Lampa.Lang.add({
       lampac_watch: { ru: 'Смотреть онлайн', en: 'Watch online', uk: 'Дивитися онлайн', zh: '在线观看' },
       lampac_video: { ru: 'Видео', en: 'Video', uk: 'Відео', zh: '视频' },
@@ -1297,8 +1447,8 @@
       lampac_does_not_answer_text: { ru: 'Поиск не дал результатов', uk: 'Пошук не дав результатів', en: 'Search did not return any results', zh: '搜索 未返回任何结果' }
     });
 
-    // minimal CSS & templates injection
-    Lampa.Template.add('lampac_css', "\n<style>@charset 'UTF-8'; .online-prestige{position:relative;border-radius:.3em;background-color:rgba(0,0,0,0.3);display:flex}.online-prestige__body{padding:1.2em;line-height:1.3;flex-grow:1;position:relative}.online-prestige__img{position:relative;width:13em;flex-shrink:0;min-height:8.2em}.online-prestige__img>img{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;border-radius:.3em;opacity:0;transition:opacity .3s}.online-prestige__img--loaded>img{opacity:1}.online-prestige__episode-number{position:absolute;top:0;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;font-size:2em}.online-prestige__loader{position:absolute;top:50%;left:50%;width:2em;height:2em;margin-left:-1em;margin-top:-1em;background:url(./img/loader.svg) no-repeat center center;background-size:contain}</style>\n");
+    // styles & templates (kept but injected once)
+    Lampa.Template.add('lampac_css', "\n        <style>\n        @charset 'UTF-8';/* minimal css kept */\n        .online-prestige{position:relative;border-radius:.3em;background-color:rgba(0,0,0,0.3);display:flex}.online-prestige__body{padding:1.2em;line-height:1.3;flex-grow:1;position:relative}.online-prestige__img{position:relative;width:13em;flex-shrink:0;min-height:8.2em}.online-prestige__img>img{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;border-radius:.3em;opacity:0;transition:opacity .3s}.online-prestige__img--loaded>img{opacity:1}.online-prestige__episode-number{position:absolute;top:0;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;font-size:2em}.online-prestige__loader{position:absolute;top:50%;left:50%;width:2em;height:2em;margin-left:-1em;margin-top:-1em;background:url(./img/loader.svg) no-repeat center center;background-size:contain}\n        </style>\n    ");
     $('body').append(Lampa.Template.get('lampac_css', {}, true));
 
     function resetTemplates() {
@@ -1313,9 +1463,10 @@
     Lampa.Component.add('bwarch', component);
     resetTemplates();
 
-    // Button HTML with Ukrainian label "Дивитись ТУТ"
+    // button HTML with Ukrainian label "Дивитись ТУТ"
     const button = `<div class="full-start__button selector view--online lampac--button" data-subtitle="${manifest.name} v${manifest.version}"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 392.697 392.697"><path d="M21.837,83.419l36.496,16.678L227.72,19.886c1.229-0.592,2.002-1.846,1.98-3.209c-0.021-1.365-0.834-2.592-2.082-3.145L197.766,0.3c-0.903-0.4-1.933-0.4-2.837,0L21.873,77.036c-1.259,0.559-2.073,1.803-2.081,3.18C19.784,81.593,20.584,82.847,21.837,83.419z" fill="currentColor"/><path d="M185.689,177.261l-64.988-30.01v91.617c0,0.856-0.44,1.655-1.167,2.114c-0.406,0.257-0.869,0.386-1.333,0.386c-0.368,0-0.736-0.082-1.079-0.244l-68.874-32.625c-0.869-0.416-1.421-1.293-1.421-2.256v-92.229L6.804,95.5c-1.083-0.496-2.344-0.406-3.347,0.238c-1.002,0.645-1.608,1.754-1.608,2.944v208.744c0,1.371,0.799,2.615,2.045,3.185l178.886,81.768c0.464,0.211,0.96,0.315,1.455,0.315c0.661,0,1.318-0.188,1.892-0.555c1.002-0.645,1.608-1.754,1.608-2.945V180.445C187.735,179.076,186.936,177.831,185.689,177.261z" fill="currentColor"/></svg><span>Дивитись ТУТ</span></div>`;
 
+    // Add button into full view items when available
     function addButton(e) {
       if (!e.render || e.render.find('.lampac--button').length) return;
       const btn = $(button);
@@ -1351,7 +1502,7 @@
       }
     } catch (e) {}
 
-    // storage sync for common balancers
+    // ensure storage sync for common balancers
     if (Lampa.Manifest.app_digital >= 177) {
       CONFIG.onlineChoiceSyncList.forEach(function (name) { Lampa.Storage.sync('online_choice_' + name, 'object_object'); });
       Lampa.Storage.sync('online_watched_last', 'object_object');
@@ -1360,4 +1511,4 @@
 
   startPlugin();
 
-})(); 
+})();
