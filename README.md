@@ -1,4 +1,4 @@
-# bwarc-plugin
+# plugin
 
 **Optimized Lampa plugin** — плагін для перегляду фільмів/серіалів через Lampa (оптимізована версія).
 
