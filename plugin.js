@@ -227,12 +227,12 @@
     let initialized = false;
     let balanserTimer = null;
     let images = [];
-    let last = false;         // <<< Додано: ініціалізація last, щоб уникнути ReferenceError
     let numberOfRequests = 0;
     let numberResetTimer = null;
     let lifeWaitTimer = null;
     let lifeWaitTimes = 0;
     let memkey = '';
+    let last = false; // важливо: не було в оригіналі — через це сипались помилки
 
     // local cache for balansers with search support (request once)
     if (typeof window.__bwa_balancers_with_search === 'undefined') {
@@ -610,6 +610,21 @@
       });
     };
 
+    // обгортка rch, щоб не падати на this.rch is not a function
+    this.rch = function(json, cb){
+      try {
+        if (json && json.rch) {
+          rchRun(json, function(){
+            if (typeof cb === 'function') cb();
+          });
+        } else {
+          if (typeof cb === 'function') cb();
+        }
+      } catch(e){
+        if (typeof cb === 'function') cb();
+      }
+    };
+
     this.toPlayElement = function (file) {
       return {
         title: file.title,
@@ -888,7 +903,7 @@
       else { this.activity.loader(false); this.activity.toggle(); }
     };
 
-    // filter builder — optimized to reduce DOM reflows
+    // filter builder
     this.filter = function (filter_items, choice) {
       const select = [];
       const add = (type, title) => {
@@ -926,7 +941,6 @@
     };
 
     this.getEpisodes = function (season, call) {
-      const episodes = [];
       let tmdb_id = object.movie.id;
       if (['cub', 'tmdb'].indexOf(object.movie.source || 'tmdb') === -1) tmdb_id = object.movie.tmdb_id;
       if (typeof tmdb_id === 'number' && object.movie.name) {
@@ -960,7 +974,6 @@
       } else body.append('<span>' + Lampa.Lang.translate('lampac_no_watch_history') + '</span>');
     };
 
-    // draw items (kept robust with fewer reflows)
     this.draw = function (items, params = {}) {
       if (!items.length) return this.empty();
       scroll.clear();
@@ -1085,7 +1098,6 @@
           scroll.append(html);
         });
 
-        // append left episodes if serial
         if (serial && episodes.length > items.length && !params.similars) {
           const left = episodes.slice(items.length);
           left.forEach(episode => {
@@ -1129,7 +1141,6 @@
       });
     };
 
-    // context menu builder (kept as before with small improvements)
     this.contextMenu = function (params) {
       params.html.on('hover:long', function () {
         const enabled = Lampa.Controller.enabled().name;
@@ -1193,7 +1204,6 @@
       });
     };
 
-    // empty / error handlers
     this.empty = function () {
       const html = Lampa.Template.get('lampac_does_not_answer', {});
       html.find('.online-empty__buttons').remove();
@@ -1248,7 +1258,6 @@
       return last_episode;
     };
 
-    // navigation controller
     this.start = function () {
       if (Lampa.Activity.active().activity !== this.activity) return;
       if (!initialized) { initialized = true; this.initialize(); }
@@ -1279,7 +1288,7 @@
     };
   } // end component
 
-  // addSourceSearch helper (kept, slightly optimized)
+  // addSourceSearch helper
   function addSourceSearch(spiderName, spiderUri) {
     const network = new Lampa.Reguest();
     const source = {
@@ -1344,7 +1353,6 @@
     Lampa.Search.addSource(source);
   }
 
-  // startPlugin: registers component, templates, translations, button etc.
   function startPlugin() {
     if (window.bwarch_plugin) return;
     window.bwarch_plugin = true;
@@ -1377,7 +1385,6 @@
 
     Lampa.Manifest.plugins = manifest;
 
-    // translations (add Ukrainian 'Дивитись ТУТ' label usage below)
     Lampa.Lang.add({
       lampac_watch: { ru: 'Смотреть онлайн', en: 'Watch online', uk: 'Дивитися онлайн', zh: '在线观看' },
       lampac_video: { ru: 'Видео', en: 'Video', uk: 'Відео', zh: '视频' },
@@ -1390,15 +1397,19 @@
       lampac_voice_success: { ru: 'Вы успешно подписались', uk: 'Ви успішно підписалися', en: 'You have successfully subscribed', zh: '您已成功订阅' },
       lampac_voice_error: { ru: 'Возникла ошибка', uk: 'Виникла помилка', en: 'An error has occurred', zh: '发生了错误' },
       lampac_clear_all_marks: { ru: 'Очистить все метки', uk: 'Очистити всі мітки', en: 'Clear all labels', zh: '清除所有标签' },
-      lampac_clear_all_timecodes: { ru: 'Очистить все тайм-коды', uk: 'Очистити всі тайм-коди', en: 'Clear all timecodes', zh: '清除所有时间代码' },
+      lampac_clear_all_timecodes: { ru: 'Очистить все тайм-коди', uk: 'Очистити всі тайм-коди', en: 'Clear all timecodes', zh: '清除所有时间代码' },
       lampac_change_balanser: { ru: 'Изменить балансер', uk: 'Змінити балансер', en: 'Change balancer', zh: '更改平衡器' },
       lampac_balanser_dont_work: { ru: 'Поиск не дал результатов', uk: 'Пошук не дав результатів', en: 'Search did not return any results', zh: '搜索 未返回任何结果' },
       lampac_balanser_timeout: { ru: 'Источник будет переключен автоматически через <span class="timeout">10</span> секунд.', uk: 'Джерело буде автоматично переключено через <span class="timeout">10</span> секунд.', en: 'The source will be switched automatically after <span class="timeout">10</span> seconds.', zh: '平衡器将在<span class="timeout">10</span>秒内自动切换。' },
       lampac_does_not_answer_text: { ru: 'Поиск не дал результатов', uk: 'Пошук не дав результатів', en: 'Search did not return any results', zh: '搜索 未返回任何结果' }
     });
 
-    // styles & templates (kept but injected once)
-    Lampa.Template.add('lampac_css', "\n        <style>\n        @charset 'UTF-8';/* minimal css kept */\n        .online-prestige{position:relative;border-radius:.3em;background-color:rgba(0,0,0,0.3);display:flex}.online-prestige__body{padding:1.2em;line-height:1.3;flex-grow:1;position:relative}.online-prestige__img{position:relative;width:13em;flex-shrink:0;min-height:8.2em}.online-prestige__img>img{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;border-radius:.3em;opacity:0;transition:opacity .3s}.online-prestige__img--loaded>img{opacity:1}.online-prestige__episode-number{position:absolute;top:0;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;font-size:2em}.online-prestige__loader{position:absolute;top:50%;left:50%;width:2em;height:2em;margin-left:-1em;margin-top:-1em;background:url(./img/loader.svg) no-repeat center center;background-size:contain}\n        </style>\n    ");
+    Lampa.Template.add('lampac_css', "\
+        <style>\
+        @charset 'UTF-8';\
+        .online-prestige{position:relative;border-radius:.3em;background-color:rgba(0,0,0,0.3);display:flex}.online-prestige__body{padding:1.2em;line-height:1.3;flex-grow:1;position:relative}.online-prestige__img{position:relative;width:13em;flex-shrink:0;min-height:8.2em}.online-prestige__img>img{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;border-radius:.3em;opacity:0;transition:opacity .3s}.online-prestige__img--loaded>img{opacity:1}.online-prestige__episode-number{position:absolute;top:0;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;font-size:2em}.online-prestige__loader{position:absolute;top:50%;left:50%;width:2em;height:2em;margin-left:-1em;margin-top:-1em;background:url(./img/loader.svg) no-repeat center center;background-size:contain}\
+        </style>\
+    ");
     $('body').append(Lampa.Template.get('lampac_css', {}, true));
 
     function resetTemplates() {
@@ -1413,10 +1424,8 @@
     Lampa.Component.add('bwarch', component);
     resetTemplates();
 
-    // button HTML with Ukrainian label "Дивитись ТУТ"
     const button = `<div class="full-start__button selector view--online lampac--button" data-subtitle="${manifest.name} v${manifest.version}"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 392.697 392.697"><path d="M21.837,83.419l36.496,16.678L227.72,19.886c1.229-0.592,2.002-1.846,1.98-3.209c-0.021-1.365-0.834-2.592-2.082-3.145L197.766,0.3c-0.903-0.4-1.933-0.4-2.837,0L21.873,77.036c-1.259,0.559-2.073,1.803-2.081,3.18C19.784,81.593,20.584,82.847,21.837,83.419z" fill="currentColor"/><path d="M185.689,177.261l-64.988-30.01v91.617c0,0.856-0.44,1.655-1.167,2.114c-0.406,0.257-0.869,0.386-1.333,0.386c-0.368,0-0.736-0.082-1.079-0.244l-68.874-32.625c-0.869-0.416-1.421-1.293-1.421-2.256v-92.229L6.804,95.5c-1.083-0.496-2.344-0.406-3.347,0.238c-1.002,0.645-1.608,1.754-1.608,2.944v208.744c0,1.371,0.799,2.615,2.045,3.185l178.886,81.768c0.464,0.211,0.96,0.315,1.455,0.315c0.661,0,1.318-0.188,1.892-0.555c1.002-0.645,1.608-1.754,1.608-2.945V180.445C187.735,179.076,186.936,177.831,185.689,177.261z" fill="currentColor"/></svg><span>Дивитись ТУТ</span></div>`;
 
-    // Add button into full view items when available
     function addButton(e) {
       if (!e.render || e.render.find('.lampac--button').length) return;
       const btn = $(button);
@@ -1452,12 +1461,11 @@
       }
     } catch (e) {}
 
-    // ensure storage sync for common balancers
     if (Lampa.Manifest.app_digital >= 177) {
       CONFIG.onlineChoiceSyncList.forEach(function (name) { Lampa.Storage.sync('online_choice_' + name, 'object_object'); });
       Lampa.Storage.sync('online_watched_last', 'object_object');
     }
-  } // end startPlugin
+  }
 
   startPlugin();
 
