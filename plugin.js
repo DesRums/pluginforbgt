@@ -227,6 +227,7 @@
     let initialized = false;
     let balanserTimer = null;
     let images = [];
+    let last = false;         // <<< Додано: ініціалізація last, щоб уникнути ReferenceError
     let numberOfRequests = 0;
     let numberResetTimer = null;
     let lifeWaitTimer = null;
@@ -1277,57 +1278,6 @@
       clearTimeout(lifeWaitTimer);
     };
   } // end component
-
-  // --- Safe rch fallback / polyfill ---
-  // This ensures this.rch is always callable and avoids "this.rch is not a function" errors.
-  // It supports simple cases where server returns { rch: { url: '...', ... } } and
-  // will try to fetch that url. For complex native websockets RCH behavior this is a
-  // graceful fallback (returns empty result) so UI won't show green error screen.
-  (function () {
-    try {
-      if (typeof component !== 'undefined' && typeof component.prototype !== 'undefined' && !component.prototype.rch) {
-        component.prototype.rch = function (json, callback) {
-          try {
-            // allow calling without callback
-            callback = typeof callback === 'function' ? callback : function () {};
-            if (!json || !json.rch) return callback('');
-            // if rch contains direct url -> fetch and inject result to local endpoint handling
-            if (json.rch.url) {
-              const net = new Lampa.Reguest();
-              net.timeout(CONFIG.defaultTimeout || 10000);
-              // try to fetch direct rch url (account wrapper if available)
-              const fetchUrl = (typeof account === 'function') ? account(json.rch.url) : json.rch.url;
-              net.silent(fetchUrl, function (res) {
-                // If server returned JSON with rch nested, attempt to rchRun again
-                try {
-                  const parsed = typeof res === 'string' ? Lampa.Arrays.decodeJson(res, null) : res;
-                  if (parsed && parsed.rch && typeof rchRun === 'function') {
-                    // try to run native rch flow
-                    rchRun(parsed, function () { callback(''); });
-                  } else {
-                    callback(res || '');
-                  }
-                } catch (e) { callback(res || ''); }
-              }, function () {
-                // fallback: if nws-client available, try rchRun with original json
-                if (typeof rchRun === 'function') {
-                  try { rchRun(json.rch, function () { callback(''); }); } catch (e) { callback(''); }
-                } else callback('');
-              }, false, { dataType: 'text' });
-            } else if (json.rch.nws) {
-              // if nws config present, try to use rchRun
-              if (typeof rchRun === 'function') {
-                try { rchRun(json.rch, function () { callback(''); }); } catch (e) { callback(''); }
-              } else callback('');
-            } else {
-              // unknown rch payload: safe empty result
-              callback('');
-            }
-          } catch (e) { try { callback(''); } catch (er) {} }
-        };
-      }
-    } catch (e) {}
-  })();
 
   // addSourceSearch helper (kept, slightly optimized)
   function addSourceSearch(spiderName, spiderUri) {
