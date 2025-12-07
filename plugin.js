@@ -177,57 +177,59 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
     });
   });
 };
-  window.rch_nws[hostkey].typeInvoke('https://rc.bwa.to', function() {});
- function rchInvoke(json, call) {
-    if (window.nwsClient && window.nwsClient[hostkey] && window.nwsClient[hostkey]._shouldReconnect){
+
+window.rch_nws[hostkey].typeInvoke('https://rc.bwa.to', function() {});
+
+function rchInvoke(json, call) {
+  if (window.nwsClient && window.nwsClient[hostkey] && window.nwsClient[hostkey]._shouldReconnect) {
+    call();
+    return;
+  }
+  if (!window.nwsClient) window.nwsClient = {};
+  if (window.nwsClient[hostkey] && window.nwsClient[hostkey].socket)
+    window.nwsClient[hostkey].socket.close();
+  window.nwsClient[hostkey] = new NativeWsClient(json.nws, {
+    autoReconnect: false
+  });
+  window.nwsClient[hostkey].on('Connected', function(connectionId) {
+    window.rch_nws[hostkey].Registry(window.nwsClient[hostkey], function() {
       call();
-      return;
- }
-    if (!window.nwsClient) window.nwsClient = {};
-    if (window.nwsClient[hostkey] && window.nwsClient[hostkey].socket)
-      window.nwsClient[hostkey].socket.close();
- window.nwsClient[hostkey] = new NativeWsClient(json.nws, {
-      autoReconnect: false
     });
- window.nwsClient[hostkey].on('Connected', function(connectionId) {
-      window.rch_nws[hostkey].Registry(window.nwsClient[hostkey], function() {
-        call();
-      });
-    });
- window.nwsClient[hostkey].connect();
-  }
+  });
+  window.nwsClient[hostkey].connect();
+}
 
-  function rchRun(json, call) {
-    if (typeof NativeWsClient == 'undefined') {
-      Lampa.Utils.putScript(["https://rc.bwa.to/js/nws-client-es5.js?v18112025"], function() {}, false, function() {
-        rchInvoke(json, call);
-      }, true);
- } else {
+function rchRun(json, call) {
+  if (typeof NativeWsClient == 'undefined') {
+    Lampa.Utils.putScript(["https://rc.bwa.to/js/nws-client-es5.js?v18112025"], function() {}, false, function() {
       rchInvoke(json, call);
- }
+    }, true);
+  } else {
+    rchInvoke(json, call);
   }
+}
 
-  function account(url) {
-    url = url + '';
- if (url.indexOf('account_email=') == -1) {
-      var email = Lampa.Storage.get('account_email');
- if (email) url = Lampa.Utils.addUrlComponent(url, 'account_email=' + encodeURIComponent(email));
-    }
-    if (url.indexOf('uid=') == -1) {
-      var uid = Lampa.Storage.get('lampac_unic_id', '');
- if (uid) url = Lampa.Utils.addUrlComponent(url, 'uid=' + encodeURIComponent(uid));
-    }
-    if (url.indexOf('token=') == -1) {
-      var token = '';
- if (token != '') url = Lampa.Utils.addUrlComponent(url, 'token=');
-    }
-    if (url.indexOf('nws_id=') == -1 && window.rch_nws && window.rch_nws[hostkey]) {
-      var nws_id = window.rch_nws[hostkey].connectionId ||
- '';
-      if (nws_id) url = Lampa.Utils.addUrlComponent(url, 'nws_id=' + encodeURIComponent(nws_id));
-    }
-    return url;
- }
+function account(url) {
+  url = url + '';
+  if (url.indexOf('account_email=') == -1) {
+    var email = Lampa.Storage.get('account_email');
+    if (email) url = Lampa.Utils.addUrlComponent(url, 'account_email=' + encodeURIComponent(email));
+  }
+  if (url.indexOf('uid=') == -1) {
+    var uid = Lampa.Storage.get('lampac_unic_id', '');
+    if (uid) url = Lampa.Utils.addUrlComponent(url, 'uid=' + encodeURIComponent(uid));
+  }
+  if (url.indexOf('token=') == -1) {
+    var token = '';
+    if (token != '') url = Lampa.Utils.addUrlComponent(url, 'token=');
+  }
+  if (url.indexOf('nws_id=') == -1 && window.rch_nws && window.rch_nws[hostkey]) {
+    var nws_id = window.rch_nws[hostkey].connectionId ||
+      '';
+    if (nws_id) url = Lampa.Utils.addUrlComponent(url, 'nws_id=' + encodeURIComponent(nws_id));
+  }
+  return url;
+}
   
   var Network = Lampa.Reguest;
 
@@ -251,11 +253,14 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
     var life_wait_times = 0;
     var life_wait_timer;
  var filter_sources = {};
-    var filter_translate = {
+    
+	// ✅ Змінено назви фільтрів
+	var filter_translate = {
       season: Lampa.Lang.translate('torrent_serial_season'),
       voice: Lampa.Lang.translate('torrent_parser_voice'),
       source: Lampa.Lang.translate('settings_rest_source')
     };
+	
  var filter_find = {
       season: [],
       voice: []
@@ -286,7 +291,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
 	
 	function clarificationSearchDelete(){
 		var id = Lampa.Utils.hash(object.movie.number_of_seasons ? object.movie.original_name : object.movie.original_title);
- var all = Lampa.Storage.get('clarification_search','{}');
+		var all = Lampa.Storage.get('clarification_search','{}');
 		
 		delete all[id];
 		
@@ -356,7 +361,8 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
         }
       };
       if (filter.addButtonBack) filter.addButtonBack();
-      filter.render().find('.filter--sort span').text(Lampa.Lang.translate('lampac_balanser'));
+      // ✅ Змінено: "Джерело" на "Звідкісь-береться"
+      filter.render().find('.filter--sort span').text(Lampa.Lang.translate('lampac_balanser')); 
       scroll.body().addClass('torrent-list');
       files.appendFiles(scroll.render());
       files.appendHead(filter.render());
@@ -1055,7 +1061,8 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       };
       
       filter_items.source = filter_sources;
-      select.push({
+	  // ✅ Змінено: "torrent_parser_reset"
+      select.push({ 
         title: Lampa.Lang.translate('torrent_parser_reset'),
         reset: true
       });
@@ -1177,6 +1184,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
         
         if (episode) {
           element.title = episode.name;
+          // ✅ Змінено: 'torrent_serial_season'
           if (element.info.length < 30) info.push(Lampa.Lang.translate('torrent_serial_season') + ' ' + element.season + (element.episode ? ', ' + Lampa.Lang.translate('torrent_serial_episode') + ' ' + element.episode : ''));
         }
         
@@ -1666,7 +1674,8 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
     };
     
     var source = {
-      name: Lampa.Lang.translate('title_online') + ' - Lampac',
+      // ✅ Змінено: Назва джерела в пошуку
+      name: Lampa.Lang.translate('title_online') + ' - By Ромашка', 
       onSearch: function onSearch(params, oncomplite) {
         var spiderUri = Lampa.Storage.get('online_search_view_type', 'search');
         
@@ -1732,8 +1741,8 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
     
     var manifst = {
       type: 'video',
-      version: '1.6.4',
-      name: 'BwaRC',
+      version: '1.0', // ✅ Змінено: "v1.0"
+      name: 'By Ромашка', // ✅ Змінено: "By Ромашка"
       description: 'Плагин для просмотра онлайн сериалов и фильмов',
       component: 'bwarch',
       onContextMenu: function onContextMenu(object) {
@@ -1764,21 +1773,43 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
     };
     Lampa.Manifest.plugins = manifst;
     
+    // ✅ Повністю перероблений блок локалізації згідно з вашими вимогами (тільки 'uk')
     Lampa.Lang.add({
+      // 1. "Дивитися онлайн" -> "Глянемо"
       lampac_watch: {
-        uk: 'Дивитися онлайн'
+        uk: 'Глянемо'
       },
+      // --- Перевизначення вбудованих Lampa-фільтрів ---
+      // 3. "Сезон" -> "Сезончик™"
+      torrent_serial_season: {
+        uk: 'Сезончик™'
+      },
+      // 5. "Перевод" -> "Говорун-версія"
+      torrent_parser_voice: {
+        uk: 'Говорун-версія'
+      },
+      // 4. "Источник" -> "Звідкісь-береться" (для заголовка фільтру)
+      settings_rest_source: {
+        uk: 'Звідкісь-береться'
+      },
+      // 6. "Сбросить фильтр" -> "Скинути шмурдяк"
+      torrent_parser_reset: {
+        uk: 'Скинути шмурдяк'
+      },
+      
+      // --- Оригінальні рядки Lampac (Уніфіковано до 'uk') ---
       lampac_video: {
         uk: 'Відео'
       },
       lampac_no_watch_history: {
-        ua: 'Немає історії перегляду'
+        uk: 'Немає історії перегляду'
       },
       lampac_nolink: {
         uk: 'Неможливо отримати посилання'
       },
+      // 4. "Джерело" -> "Звідкісь-береться" (для назви балансера)
       lampac_balanser: {
-        uk: 'Джерело'
+        uk: 'Звідкісь-береться'
       },
       helper_online_file: {
         uk: 'Утримуйте клавішу "ОК" для виклику контекстного меню'
